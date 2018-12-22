@@ -16,7 +16,25 @@ AndroidExternalTextureGL::AndroidExternalTextureGL(
     const fml::jni::JavaObjectWeakGlobalRef& surfaceTexture)
     : Texture(id), surface_texture_(surfaceTexture), transform(SkMatrix::I()) {}
 
-AndroidExternalTextureGL::~AndroidExternalTextureGL() = default;
+AndroidExternalTextureGL::AndroidExternalTextureGL(int64_t id,
+                                                   int64_t texture_id)
+    : Texture(id), texture_name_(texture_id) {
+  use_out_texture_ = true;
+}
+
+AndroidExternalTextureGL::~AndroidExternalTextureGL() {
+  if (!use_out_texture_) {
+    if (state_ == AttachmentState::attached) {
+      Detach();
+      if (texture_name_ != 0) {
+        glDeleteTextures(1, &texture_name_);
+        texture_name_ = 0;
+      }
+    }
+    Release();
+    state_ = AttachmentState::detached;
+  }
+};
 
 void AndroidExternalTextureGL::OnGrContextCreated() {
   state_ = AttachmentState::uninitialized;
@@ -32,21 +50,32 @@ void AndroidExternalTextureGL::Paint(SkCanvas& canvas,
   if (state_ == AttachmentState::detached) {
     return;
   }
+
   if (state_ == AttachmentState::uninitialized) {
-    glGenTextures(1, &texture_name_);
-    Attach(static_cast<jint>(texture_name_));
+    if (!use_out_texture_) {
+      glGenTextures(1, &texture_name_);
+      Attach(static_cast<jint>(texture_name_));
+    }
     state_ = AttachmentState::attached;
   }
   if (!freeze && new_frame_ready_) {
-    Update();
+    if (!use_out_texture_) {
+      Update();
+    }
     new_frame_ready_ = false;
   }
   GrGLTextureInfo textureInfo = {GL_TEXTURE_EXTERNAL_OES, texture_name_,
                                  GL_RGBA8_OES};
+  if (use_out_texture_) {
+    textureInfo.fTarget = GL_TEXTURE_2D;
+    transform.setIdentity();
+  }
+
   GrBackendTexture backendTexture(1, 1, GrMipMapped::kNo, textureInfo);
   sk_sp<SkImage> image = SkImage::MakeFromTexture(
       canvas.getGrContext(), backendTexture, kTopLeft_GrSurfaceOrigin,
       kRGBA_8888_SkColorType, kPremul_SkAlphaType, nullptr);
+
   if (image) {
     SkAutoCanvasRestore autoRestore(&canvas, true);
     canvas.translate(bounds.x(), bounds.y());
@@ -82,10 +111,16 @@ void AndroidExternalTextureGL::UpdateTransform() {
 }
 
 void AndroidExternalTextureGL::OnGrContextDestroyed() {
-  if (state_ == AttachmentState::attached) {
-    Detach();
+  if (!use_out_texture_) {
+    if (state_ == AttachmentState::attached) {
+      Detach();
+      if (texture_name_ != 0) {
+        glDeleteTextures(1, &texture_name_);
+        texture_name_ = 0;
+      }
+    }
+    state_ = AttachmentState::detached;
   }
-  state_ = AttachmentState::detached;
 }
 
 void AndroidExternalTextureGL::Attach(jint textureName) {
@@ -113,6 +148,15 @@ void AndroidExternalTextureGL::Detach() {
       surface_texture_.get(env);
   if (!surfaceTexture.is_null()) {
     SurfaceTextureDetachFromGLContext(env, surfaceTexture.obj());
+  }
+}
+
+void AndroidExternalTextureGL::Release() {
+  JNIEnv* env = fml::jni::AttachCurrentThread();
+  fml::jni::ScopedJavaLocalRef<jobject> surfaceTexture =
+      surface_texture_.get(env);
+  if (!surfaceTexture.is_null()) {
+    SurfaceTextureRelease(env, surfaceTexture.obj());
   }
 }
 
