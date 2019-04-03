@@ -131,6 +131,7 @@ def to_gn_args(args):
         gn_args['dart_runtime_mode'] = 'profile'
     elif runtime_mode == 'dynamic_release':
         gn_args['dart_runtime_mode'] = 'release'
+        gn_args['is_product'] = True
     else:
         gn_args['dart_runtime_mode'] = runtime_mode
 
